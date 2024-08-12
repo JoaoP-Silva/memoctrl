@@ -290,9 +290,8 @@ void pager_fault(pid_t pid, void *addr){
 
     //If the zero-fill wasnt perfomed yet, alocate memory for the page and change permissions
     int used = currPage->used;
-    // In memory status
     pthread_mutex_lock(&page_table.mutex);
-    int in_mem = currPage->entry->in_mem;
+    // First use memory
     if(!used)
     {
         pthread_mutex_lock(&frames.mutex);
@@ -310,8 +309,8 @@ void pager_fault(pid_t pid, void *addr){
             frame = dead_entry->frame;
             int block = dead_entry->disk_block;
             dead_entry->in_mem = 0;
-            intptr_t _addr =  getVAddr(dead_entry->page_number); 
-            mmu_nonresident(pid, (void*)addr);
+            void* _addr =  (void*)getVAddr(dead_entry->page_number); 
+            mmu_nonresident(pid, _addr);
             mmu_disk_write(frame, block);
         }
         struct table_entry* new_entry = (struct table_entry*)malloc(sizeof(struct table_entry));
@@ -343,35 +342,39 @@ void pager_fault(pid_t pid, void *addr){
         void* _addr = (void*)((intptr_t)addr);
         mmu_resident(pid, _addr, frame, PROT_READ);
     }
-    
-    else if(used && in_mem)
+    // Memory already used
+    else
     {
-        currPage->entry->prot = PROT_READ | PROT_WRITE;
-        void* _addr = (void*)((intptr_t)addr);
-        mmu_chprot(pid, _addr, PROT_READ | PROT_WRITE);
-        pthread_mutex_unlock(&plist.mutex);
-    }
-    else if(used && !in_mem)
-    {
-        // Unsuded page go to disk
-        struct table_entry* currEntry = currPage->entry;
-        struct table_entry* dead_entry = getUnusedPage();
-        int frame = dead_entry->frame;
-        int dead_block = dead_entry->disk_block;
-        dead_entry->in_mem = 0;
-        void* _addr =  (void*)getVAddr(dead_entry->page_number); 
-        mmu_nonresident(pid, addr);
-        mmu_disk_write(frame, dead_block);
-        mmu_disk_read(currEntry->disk_block, frame);
-        // Update curr entry status
-        currEntry->frame = frame;
-        currEntry->in_mem = 1;
-        // Set mmu_resident parameters
-        frame = currEntry->frame;
-        int prot = currEntry->prot;
-        _addr = (void*)getVAddr(currEntry->page_number);
-        intptr_t pid = currEntry->pid;
-        mmu_resident(pid, _addr, frame, prot);
+        int in_mem = currPage->entry->in_mem;
+        if(in_mem)
+        {
+            currPage->entry->prot = PROT_READ | PROT_WRITE;
+            void* _addr = (void*)((intptr_t)addr);
+            mmu_chprot(pid, _addr, PROT_READ | PROT_WRITE);
+            pthread_mutex_unlock(&plist.mutex);
+        }
+        else if(!in_mem)
+        {
+            // Unsuded page go to disk
+            struct table_entry* currEntry = currPage->entry;
+            struct table_entry* dead_entry = getUnusedPage();
+            int frame = dead_entry->frame;
+            int dead_block = dead_entry->disk_block;
+            dead_entry->in_mem = 0;
+            void* _addr =  (void*)getVAddr(dead_entry->page_number); 
+            mmu_nonresident(pid, addr);
+            mmu_disk_write(frame, dead_block);
+            mmu_disk_read(currEntry->disk_block, frame);
+            // Update curr entry status
+            currEntry->frame = frame;
+            currEntry->in_mem = 1;
+            // Set mmu_resident parameters
+            frame = currEntry->frame;
+            int prot = currEntry->prot;
+            _addr = (void*)getVAddr(currEntry->page_number);
+            intptr_t pid = currEntry->pid;
+            mmu_resident(pid, _addr, frame, prot);
+        }
     }
     
     pthread_mutex_unlock(&page_table.mutex);
