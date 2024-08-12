@@ -319,43 +319,55 @@ void pager_fault(pid_t pid, void *addr){
 
 int pager_syslog(pid_t pid, void *addr, size_t len){
     pthread_mutex_lock(&page_table.mutex);
-  
+    pthread_mutex_lock(&plist.mutex);
     struct plist_node* currProcess = plist.head;
-
     for(int i = 0; i < plist.num_process; i++, currProcess = currProcess->next) if(currProcess->pid == pid) break;    
+    
     int pageNumber = currProcess->n_pages;
-    //printf("PAGE NUMBER EH %d", pageNumber);
-	
+    intptr_t rem_bytes = ((intptr_t)addr - UVM_BASEADDR) % 0x1000;
+    intptr_t offset_pages = ((intptr_t)addr - UVM_BASEADDR) / ((intptr_t)0x1000);
+    intptr_t num_pages_write = len / (intptr_t)0x1000;
+
 	if (pageNumber == 0) {
-		pthread_mutex_unlock(&page_table.mutex);
+        pthread_mutex_unlock(&page_table.mutex);
+		pthread_mutex_unlock(&plist.mutex);
 		return -1;
 	}
     else {
-        int diff = pageNumber - ((intptr_t)addr - UVM_BASEADDR) / ((intptr_t)0x1000);
-        if(diff < 0) {
+        intptr_t end_addr_req  =  addr + num_pages_write;
+        intptr_t end_addr_req  =  UVM_BASEADDR + pageNumber;
+
+        if(end_addr_req < end_addr_req || addr < UVM_BASEADDR) {
             pthread_mutex_unlock(&page_table.mutex);
+            pthread_mutex_unlock(&plist.mutex);
             return -1;
         }
-        else if(len > 4096) {
-            pthread_mutex_unlock(&page_table.mutex);
-            return -1;
-        }
+        // else if(len > 4096) {
+        //     pthread_mutex_unlock(&page_table.mutex);
+        //     pthread_mutex_unlock(&plist.mutex);
+        //     return -1;
+        // }
     }
-
-    char *buf = (char *)malloc(len + 1);
-    for (size_t i = 0; i < len; i++) {
-        buf[i] = pmem[pageNumber * 4096 + i];  
+    char* buf = (char *)malloc(len * sizeof(char));
+    struct p_pages_node* currPage = currProcess->p_pages->head; 
+    // Go to initial page to write
+    for(int i = 0; i < offset_pages; i++, currPage = currPage->next);
+    int frame = currPage->entry->frame;
+    for(intptr_t i = 0; i < num_pages_write; i++, currPage = currPage->next)
+    {
+        frame = currPage->entry->frame;
+        for(int j = 0; j < 4; j++)buf[i] = pmem[frame + j];
     }
-
-    
-    for(int i = 0; i < len; i++) {
-        printf("%02x", (unsigned)buf[i]);
-        if (i == len - 1) printf("\n");
+    // get the remaining bytes
+    if(rem_bytes)
+    {
+        frame = currPage->entry->frame;
+        for(int i = 0; i < rem_bytes; i++)buf[i] = pmem[frame + i];
     }
-
-	free(buf);
-
+    // Print buffer
+    for(int i = 0; i < len; i++) printf("%02x", (unsigned)buf[i]);
     pthread_mutex_unlock(&page_table.mutex);
+    pthread_mutex_unlock(&plist.mutex);
     return 0;
     
 }
