@@ -362,7 +362,7 @@ void uvm_connect_socket(int sock, const struct sockaddr_un * addr) {
 		loge(LOG_ERROR, __FILE__, __LINE__);
 		logd(LOG_FATAL, "%s connection attempt %d/%d failed\n",
 				MMU_PROTO_UNIX_PATH,
-				try,
+				try + 1,
 				NUM_CONNECTION_TRIES);
 		try += 1;
 	} while(try < NUM_CONNECTION_TRIES);
