@@ -261,7 +261,8 @@ void pager_fault(pid_t pid, void *addr){
     for(int i = 0; i < (int)page_number; i++, currPage = currPage->next);
 
     //If the zero-fill wasnt perfomed yet, alocate memory for the page and change permissions
-    if(!currPage->used)
+    int used = currPage->used;
+    if(!used)
     {
         pthread_mutex_lock(&frames.mutex);
         int frame = getFreeFrame();
@@ -306,12 +307,13 @@ void pager_fault(pid_t pid, void *addr){
     }
     // If protection equals PROT_READ or PROT_NOME, the fault is from requiring writing access
     pthread_mutex_lock(&page_table.mutex);
-    if(currPage->used && (currPage->entry->prot == PROT_READ || currPage->entry->prot == PROT_NONE))
+    if(used && (currPage->entry->prot == PROT_READ || currPage->entry->prot == PROT_NONE))
     {
         currPage->entry->prot = PROT_READ | PROT_WRITE;
         void* _addr = (void*)((intptr_t)addr);
         mmu_chprot(pid, _addr, PROT_READ | PROT_WRITE);
     }
+    pthread_mutex_unlock(&page_table.mutex);
 }
 
 int pager_syslog(pid_t pid, void *addr, size_t len){return 0;}
