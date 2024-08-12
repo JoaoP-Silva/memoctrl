@@ -16,9 +16,11 @@
 // An entry in the page table
 struct table_entry{
     int page_number;
+    bool in_mem;
     int frame;
     int prot;
     int disk_block;
+    pid_t pid;
     struct table_entry* next;
 };
 
@@ -29,6 +31,8 @@ struct page_table {
     struct table_entry* tail;
     // Mutex for sync
     pthread_mutex_t mutex;
+    // Ptr to perform the second change algoritm
+    struct table_entry* ptr;
 };
 
 /* PROCESS_LIST */
@@ -52,7 +56,7 @@ struct p_pages {
     struct p_pages_node* tail;
 };
 
-// List of processes with pages in memory
+// List of processes with declared pages
 struct plist_node {
     // Process id
     pid_t pid;
@@ -163,6 +167,29 @@ intptr_t getVAddr(int pageNumber)
     return UVM_BASEADDR + pageNumber * ((intptr_t)0x1000);
 }
 
+// Clock (second chance) algorithm (run this method with the mutex locked)
+struct table_entry* getUnusedPage()
+{
+    while(page_table.ptr == NULL || page_table.ptr->prot != PROT_NONE)
+    {
+        // Only consider pages in memory
+        if(page_table.ptr->in_mem == 1)
+        {
+            if(page_table.ptr == NULL)page_table.ptr = page_table.head;
+            // Change page protection
+            page_table.ptr->prot = PROT_NONE;
+            pid_t pid = page_table.ptr->pid;
+            intptr_t addr = getVAddr(page_table.ptr->page_number);
+            mmu_chprot(pid, (void*)addr, PROT_NONE);
+            // Go to next page
+        }
+        page_table.ptr = page_table.ptr->next;
+
+    }
+
+    return page_table.ptr;
+}
+
 /* External functions */
 
 void pager_init(int nframes, int nblocks){   
@@ -172,6 +199,7 @@ void pager_init(int nframes, int nblocks){
     blocks.free_blocks = nblocks;
     page_table.head = NULL;
     page_table.tail = NULL;
+    page_table.ptr = NULL;
     pthread_mutex_init(&page_table.mutex, NULL);
 
     plist.head = NULL;
@@ -262,6 +290,9 @@ void pager_fault(pid_t pid, void *addr){
 
     //If the zero-fill wasnt perfomed yet, alocate memory for the page and change permissions
     int used = currPage->used;
+    // In memory status
+    pthread_mutex_lock(&page_table.mutex);
+    int in_mem = currPage->entry->in_mem;
     if(!used)
     {
         pthread_mutex_lock(&frames.mutex);
@@ -271,10 +302,17 @@ void pager_fault(pid_t pid, void *addr){
             allocateFrame(frame);
             pthread_mutex_unlock(&frames.mutex);
         }
-        // All frames in use
+        // All frames in use, perform second chance algorithm
         else
         {
-
+            // Unsuded page go to disk
+            struct table_entry* dead_entry = getUnusedPage();
+            frame = dead_entry->frame;
+            int block = dead_entry->disk_block;
+            dead_entry->in_mem = 0;
+            intptr_t _addr =  getVAddr(dead_entry->page_number); 
+            mmu_nonresident(pid, (void*)addr);
+            mmu_disk_write(frame, block);
         }
         struct table_entry* new_entry = (struct table_entry*)malloc(sizeof(struct table_entry));
         currPage->entry = new_entry;
@@ -283,8 +321,9 @@ void pager_fault(pid_t pid, void *addr){
         new_entry->next = NULL;
         new_entry->page_number = (int)page_number;
         new_entry->prot = PROT_NONE;
+        new_entry->pid = pid;
+        new_entry->in_mem = 1;
         // Append entry to the table
-        pthread_mutex_lock(&page_table.mutex);
         if(page_table.head == NULL )
         {
             page_table.head = new_entry;
@@ -298,22 +337,43 @@ void pager_fault(pid_t pid, void *addr){
             page_table.tail = new_entry;
             currPage->previous_entry = old_tail;
         }
-        pthread_mutex_unlock(&page_table.mutex);
         pthread_mutex_unlock(&plist.mutex);
         mmu_zero_fill(frame);
         currPage->used = 1;
         void* _addr = (void*)((intptr_t)addr);
         mmu_resident(pid, _addr, frame, PROT_READ);
     }
-    // If protection equals PROT_READ or PROT_NOME, the fault is from requiring writing access
-    pthread_mutex_lock(&page_table.mutex);
-    if(used && (currPage->entry->prot == PROT_READ || currPage->entry->prot == PROT_NONE))
+    
+    else if(used && in_mem)
     {
         currPage->entry->prot = PROT_READ | PROT_WRITE;
         void* _addr = (void*)((intptr_t)addr);
         mmu_chprot(pid, _addr, PROT_READ | PROT_WRITE);
         pthread_mutex_unlock(&plist.mutex);
     }
+    else if(used && !in_mem)
+    {
+        // Unsuded page go to disk
+        struct table_entry* currEntry = currPage->entry;
+        struct table_entry* dead_entry = getUnusedPage();
+        int frame = dead_entry->frame;
+        int dead_block = dead_entry->disk_block;
+        dead_entry->in_mem = 0;
+        void* _addr =  (void*)getVAddr(dead_entry->page_number); 
+        mmu_nonresident(pid, addr);
+        mmu_disk_write(frame, dead_block);
+        mmu_disk_read(currEntry->disk_block, frame);
+        // Update curr entry status
+        currEntry->frame = frame;
+        currEntry->in_mem = 1;
+        // Set mmu_resident parameters
+        frame = currEntry->frame;
+        int prot = currEntry->prot;
+        _addr = (void*)getVAddr(currEntry->page_number);
+        intptr_t pid = currEntry->pid;
+        mmu_resident(pid, _addr, frame, prot);
+    }
+    
     pthread_mutex_unlock(&page_table.mutex);
 }
 
