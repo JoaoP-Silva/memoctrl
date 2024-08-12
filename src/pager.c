@@ -55,6 +55,8 @@ struct p_pages_node{
     bool used;
     // Mapped entry in the page table
     struct table_entry* entry;
+    // Entry right before
+    struct table_entry* previous_entry;
     // Next process page
     struct p_pages_node* next;
 };
@@ -73,7 +75,7 @@ struct plist_node {
     // Process pages
     struct p_pages* p_pages;
     // Next process
-    struct plist* next;
+    struct plist_node* next;
 };
 
 /* A list that references the page table by processes*/
@@ -110,6 +112,70 @@ struct page_table page_table;
 struct plist plist;
 struct frames frames;
 struct blocks blocks;
+
+/* Utils methods*/
+int getFreeFrame()
+{
+    int res = -1;
+    for(int i = 0; i < frames.total_frames; i ++) if(!frames.arr[i]) 
+    {
+        res = i;
+        break;
+    }
+    return res;
+}
+
+int getFreeBlock()
+{
+    int res = -1;
+    for(int i = 0; i < blocks.total_blocks; i ++)if(!blocks.arr[i])
+    {
+        res = i;
+        break;
+    }
+    return res; 
+}
+
+void allocateDiskBlock(int i)
+{
+    if(!blocks.arr[i])
+    {
+        blocks.arr[i] = 1;
+        blocks.free_blocks--;
+    }else printf("Disk block already reserved to another page.\n");   
+}
+
+void allocateFrame(int i)
+{
+    if(!frames.arr[i])
+    {
+        frames.arr[i] = 1;
+        frames.free_frames--;
+    }else printf("Mem frame already reserved\n");
+}
+
+void freeDiskBlock(int i)
+{
+    if(blocks.arr[i])
+    {
+        blocks.arr[i] = 0;
+        blocks.free_blocks++;
+    }  
+}
+
+void freeMemoryFrame(int i)
+{
+    if(frames.arr[i])
+    {
+        frames.arr[i] = 0;
+        frames.free_frames++;
+    }  
+}
+
+intptr_t getVAddr(int pageNumber)
+{
+    return UVM_BASEADDR + pageNumber * ((intptr_t)0x1000);
+}
 
 /* External functions */
 
@@ -206,7 +272,7 @@ void pager_fault(pid_t pid, void *addr){
     if(!currPage->used)
     {
         pthread_mutex_lock(&frames.mutex);
-        int frame = getFreeFrame;
+        int frame = getFreeFrame();
         if(frame != -1)
         {
             allocateFrame(frame);
@@ -230,12 +296,14 @@ void pager_fault(pid_t pid, void *addr){
         {
             page_table.head = new_entry;
             page_table.tail = page_table.head;
+            currPage->previous_entry = NULL;
         }
         else
         {
             struct table_entry* old_tail = page_table.tail;
             old_tail->next = new_entry;
             page_table.tail = new_entry;
+            currPage->previous_entry = old_tail;
         }
         pthread_mutex_unlock(&page_table.mutex);
         pthread_mutex_unlock(&plist.mutex);
@@ -255,59 +323,66 @@ void pager_fault(pid_t pid, void *addr){
 
 int pager_syslog(pid_t pid, void *addr, size_t len){}
 
-void pager_destroy(pid_t pid){}
-
-/* Utils methods*/
-int getFreeFrame()
-{
-    int res = -1;
-    for(int i = 0; i < frames.total_frames; i ++) if(!frames.arr[i]) 
+void pager_destroy(pid_t pid){
+    pthread_mutex_lock(&plist.mutex);
+    // Locate process in process list and mantain the proces right before
+    struct plist_node* currProcess = plist.head;
+    struct plist_node* prevProcess = NULL;
+    for(int i = 0; i < plist.num_process; i++, prevProcess=currProcess, currProcess = currProcess->next) 
+    {if(currProcess->pid == pid) break;}
+    
+    struct p_pages_node* currPage = currProcess->p_pages->head;
+    // Remove all nodes except head
+    while(currPage->next != NULL)
     {
-        res = i;
-        break;
+        struct p_pages_node* toRemove = currPage->next;
+        currPage->next = toRemove->next;
+        // Remove from page table
+        pthread_mutex_lock(&page_table.mutex);
+        struct table_entry* prev = toRemove->previous_entry;
+        struct table_entry* curr = toRemove->entry;
+        int frame = curr->frame;
+        int block = curr->disk_block;
+        struct table_entry* next = toRemove->entry->next;
+        // If you are removing the head of the page table, update head
+        if(prev == NULL) page_table.head = next;
+        else prev->next = next;
+        free(curr);
+        pthread_mutex_unlock(&page_table.mutex);
+        // Remove from process page table
+        free(toRemove);
+        // Free resources
+        pthread_mutex_lock(&blocks.mutex);
+        freeDiskBlock(block);
+        pthread_mutex_unlock(&blocks.mutex);
+        pthread_mutex_lock(&frames.mutex);
+        freeMemoryFrame(frame);
+        pthread_mutex_unlock(&frames.mutex);
     }
-    return res;
-}
-
-int getFreeBlock()
-{
-    int res = -1;
-    for(int i = 0; i < blocks.total_blocks; i ++)if(!blocks.arr[i])
-    {
-        res = i;
-        break;
-    }
-    return res; 
-}
-
-void allocateDiskBlock(int i)
-{
-    if(!blocks.arr[i])
-    {
-        blocks.arr[i] = 1;
-        blocks.free_blocks--;
-    }else printf("Disk block already reserved to another page.\n");   
-}
-
-void allocateFrame(int i)
-{
-    if(!frames.arr[i])
-    {
-        frames.arr[i] = 1;
-        frames.free_frames--;
-    }else printf("Mem frame already reserved\n");
-}
-
-void freeDiskBlock(int i)
-{
-    if(blocks.arr[i])
-    {
-        blocks.arr[i] = 0;
-        blocks.free_blocks++;
-    }  
-}
-
-intptr_t getVAddr(int pageNumber)
-{
-    return UVM_BASEADDR + pageNumber * ((intptr_t)0x1000);
+    // Remove head node
+    struct p_pages_node* toRemove = currPage;
+    struct table_entry* prev = toRemove->previous_entry;
+    struct table_entry* curr = toRemove->entry;
+    int frame = curr->frame;
+    int block = curr->disk_block;
+    struct table_entry* next = toRemove->entry->next;
+    // If you are removing the head of the page table, update head
+    if(prev == NULL) page_table.head = next;
+    else prev->next = next;
+    free(curr);
+    pthread_mutex_unlock(&page_table.mutex);
+    // Remove from process page table
+    free(toRemove);
+    // Free resources
+    pthread_mutex_lock(&blocks.mutex);
+    freeDiskBlock(block);
+    pthread_mutex_unlock(&blocks.mutex);
+    pthread_mutex_lock(&frames.mutex);
+    freeMemoryFrame(frame);
+    pthread_mutex_unlock(&frames.mutex);
+    // Remove the process block from the process list
+    if(prevProcess == NULL) plist.head = currProcess->next;
+    else prevProcess->next = currProcess->next;
+    free(currProcess);
+    pthread_mutex_unlock(&plist.mutex);
 }
