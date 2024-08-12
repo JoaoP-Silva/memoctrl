@@ -300,6 +300,7 @@ void pager_fault(pid_t pid, void *addr){
         pthread_mutex_unlock(&page_table.mutex);
         pthread_mutex_unlock(&plist.mutex);
         mmu_zero_fill(frame);
+        currPage->used = 1;
         void* _addr = (void*)((intptr_t)addr);
         mmu_resident(pid, _addr, frame, PROT_READ);
     }
@@ -308,7 +309,7 @@ void pager_fault(pid_t pid, void *addr){
     if(currPage->used && (currPage->entry->prot == PROT_READ || currPage->entry->prot == PROT_NONE))
     {
         currPage->entry->prot = PROT_READ | PROT_WRITE;
-        void* _addr = (void*)((intptr_t)addr - UVM_BASEADDR);
+        void* _addr = (void*)((intptr_t)addr);
         mmu_chprot(pid, _addr, PROT_READ | PROT_WRITE);
     }
 }
