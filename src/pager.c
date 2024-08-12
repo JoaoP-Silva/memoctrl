@@ -1,27 +1,13 @@
-#include "uvm.h"
-
-#include <sys/mman.h>
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <sys/stat.h>
-#include <sys/un.h>
-
-#include <assert.h>
-#include <errno.h>
-#include <fcntl.h>
 #include <pthread.h>
-#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <stdint.h>
+#include <sys/mman.h>
 #include <unistd.h>
 #include <stdbool.h>
 
-#include "log.h"
-
 #include "mmu.h"
-#include "mmuproto.h"
+#include "pager.h"
 
 /* --- Data structures definitions --- */
 
@@ -196,6 +182,7 @@ void pager_init(int nframes, int nblocks){
     blocks.arr = (bool*)malloc(nblocks * sizeof(bool));
     pthread_mutex_init(&frames.mutex, NULL);
     pthread_mutex_init(&blocks.mutex, NULL);
+    printf("CHEGOU NO FIM DO INIT\n");
 }
 
 void pager_create(pid_t pid){
@@ -321,15 +308,20 @@ void pager_fault(pid_t pid, void *addr){
     }
 }
 
-int pager_syslog(pid_t pid, void *addr, size_t len){}
+int pager_syslog(pid_t pid, void *addr, size_t len){return 0;}
 
 void pager_destroy(pid_t pid){
     pthread_mutex_lock(&plist.mutex);
+    if (plist.num_process == 0) goto end;
+    
     // Locate process in process list and mantain the proces right before
     struct plist_node* currProcess = plist.head;
     struct plist_node* prevProcess = NULL;
     for(int i = 0; i < plist.num_process; i++, prevProcess=currProcess, currProcess = currProcess->next) 
-    {if(currProcess->pid == pid) break;}
+    {
+        if(currProcess->pid == pid) break;
+        else if(i == plist.num_process - 1) goto end;
+    }
     
     struct p_pages_node* currPage = currProcess->p_pages->head;
     // Remove all nodes except head
@@ -384,5 +376,7 @@ void pager_destroy(pid_t pid){
     if(prevProcess == NULL) plist.head = currProcess->next;
     else prevProcess->next = currProcess->next;
     free(currProcess);
+    end:
     pthread_mutex_unlock(&plist.mutex);
+    printf("CHEGOU NO FIM DO DESTROY\n");
 }
