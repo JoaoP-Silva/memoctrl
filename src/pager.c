@@ -312,6 +312,7 @@ void pager_fault(pid_t pid, void *addr){
         currPage->entry->prot = PROT_READ | PROT_WRITE;
         void* _addr = (void*)((intptr_t)addr);
         mmu_chprot(pid, _addr, PROT_READ | PROT_WRITE);
+        pthread_mutex_unlock(&plist.mutex);
     }
     pthread_mutex_unlock(&page_table.mutex);
 }
