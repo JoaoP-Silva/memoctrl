@@ -317,7 +317,48 @@ void pager_fault(pid_t pid, void *addr){
     pthread_mutex_unlock(&page_table.mutex);
 }
 
-int pager_syslog(pid_t pid, void *addr, size_t len){return 0;}
+int pager_syslog(pid_t pid, void *addr, size_t len){
+    pthread_mutex_lock(&page_table.mutex);
+  
+    struct plist_node* currProcess = plist.head;
+
+    for(int i = 0; i < plist.num_process; i++, currProcess = currProcess->next) if(currProcess->pid == pid) break;    
+    int pageNumber = currProcess->n_pages;
+    //printf("PAGE NUMBER EH %d", pageNumber);
+	
+	if (pageNumber == 0) {
+		pthread_mutex_unlock(&page_table.mutex);
+		return -1;
+	}
+    else {
+        int diff = pageNumber - ((intptr_t)addr - UVM_BASEADDR) / ((intptr_t)0x1000);
+        if(diff < 0) {
+            pthread_mutex_unlock(&page_table.mutex);
+            return -1;
+        }
+        else if(len > 4096) {
+            pthread_mutex_unlock(&page_table.mutex);
+            return -1;
+        }
+    }
+
+    char *buf = (char *)malloc(len + 1);
+    for (size_t i = 0; i < len; i++) {
+        buf[i] = pmem[pageNumber * 4096 + i];  
+    }
+
+    
+    for(int i = 0; i < len; i++) {
+        printf("%02x", (unsigned)buf[i]);
+        if (i == len - 1) printf("\n");
+    }
+
+	free(buf);
+
+    pthread_mutex_unlock(&page_table.mutex);
+    return 0;
+    
+}
 
 void pager_destroy(pid_t pid){
     pthread_mutex_lock(&plist.mutex);
