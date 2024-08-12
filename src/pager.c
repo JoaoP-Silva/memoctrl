@@ -211,24 +211,30 @@ void pager_create(pid_t pid){
 void *pager_extend(pid_t pid){
     // Allocate block to new page
     int block;
+    pthread_mutex_lock(&blocks.mutex);
     if(blocks.free_blocks) block = getFreeBlock();
     else return NULL;
     allocateDiskBlock(block);
-
+    pthread_mutex_unlock(&blocks.mutex);
+    
     pthread_mutex_lock(&plist.mutex);
     // Locate process in process list
     struct plist_node* currProcess = plist.head; 
     for(int i = 0; i < plist.num_process; i++, currProcess = currProcess->next) if(currProcess->pid == pid) break;    
     currProcess->n_pages++;
     int pageNumber = currProcess->n_pages - 1;
-    //Set new page to add to the process page list
+
+    //Check if the process page list was already declared
+    if(currProcess->p_pages == NULL)currProcess->p_pages = (struct p_pages*)malloc(sizeof(struct p_pages));
     struct p_pages* my_proc_pages = currProcess->p_pages;
+    
+    //Set new page to add to the process page list
     struct p_pages_node* new_page = (struct p_pages_node*)malloc(sizeof(struct p_pages_node));
     new_page->disc_block = block;
     new_page->entry = NULL;
     new_page->next = NULL;
     // Check whether its the first page of the process
-    if(pageNumber == 1)
+    if(pageNumber == 0)
     {
         my_proc_pages->head = new_page;
         my_proc_pages->tail = my_proc_pages->head;
@@ -335,6 +341,42 @@ void pager_destroy(pid_t pid){
             pthread_mutex_lock(&page_table.mutex);
             struct table_entry* prev = toRemove->previous_entry;
             struct table_entry* curr = toRemove->entry;
+            if(curr != NULL)
+            {
+                struct table_entry* next = toRemove->entry->next;
+                int frame = curr->frame;
+                int block = curr->disk_block;
+                // If you are removing the head of the page table, update head
+                if(prev == NULL) page_table.head = next;
+                else prev->next = next;
+                free(curr);
+                pthread_mutex_unlock(&page_table.mutex);
+                // Remove from process page table
+                free(toRemove);
+                // Free resources
+                pthread_mutex_lock(&blocks.mutex);
+                freeDiskBlock(block);
+                pthread_mutex_unlock(&blocks.mutex);
+                pthread_mutex_lock(&frames.mutex);
+                freeMemoryFrame(frame);
+                pthread_mutex_unlock(&frames.mutex);
+            }
+            else
+            {
+                int block = currPage->disc_block;
+                pthread_mutex_lock(&blocks.mutex);
+                freeDiskBlock(block);
+                pthread_mutex_unlock(&blocks.mutex);
+            }
+        }
+    
+        // Remove head node
+        struct p_pages_node* toRemove = currPage;
+        struct table_entry* prev = toRemove->previous_entry;
+        struct table_entry* curr = toRemove->entry;
+        // Check if the page realy was in the page table
+        if(curr != NULL)
+        {
             int frame = curr->frame;
             int block = curr->disk_block;
             struct table_entry* next = toRemove->entry->next;
@@ -353,32 +395,19 @@ void pager_destroy(pid_t pid){
             freeMemoryFrame(frame);
             pthread_mutex_unlock(&frames.mutex);
         }
-    
-        // Remove head node
-        struct p_pages_node* toRemove = currPage;
-        struct table_entry* prev = toRemove->previous_entry;
-        struct table_entry* curr = toRemove->entry;
-        int frame = curr->frame;
-        int block = curr->disk_block;
-        struct table_entry* next = toRemove->entry->next;
-        // If you are removing the head of the page table, update head
-        if(prev == NULL) page_table.head = next;
-        else prev->next = next;
-        free(curr);
-        pthread_mutex_unlock(&page_table.mutex);
-        // Remove from process page table
-        free(toRemove);
-        // Free resources
-        pthread_mutex_lock(&blocks.mutex);
-        freeDiskBlock(block);
-        pthread_mutex_unlock(&blocks.mutex);
-        pthread_mutex_lock(&frames.mutex);
-        freeMemoryFrame(frame);
-        pthread_mutex_unlock(&frames.mutex);
+        // If the page wasnt in the page table, only the block was reserved
+        else
+        {
+            int block = currPage->disc_block;
+            pthread_mutex_lock(&blocks.mutex);
+            freeDiskBlock(block);
+            pthread_mutex_unlock(&blocks.mutex);
+        }
     }
     // Remove the process block from the process list
     if(prevProcess == NULL) plist.head = currProcess->next;
     else prevProcess->next = currProcess->next;
+    free(currProcess->p_pages);
     free(currProcess);
     plist.num_process--;
     end:
