@@ -300,7 +300,7 @@ void pager_fault(pid_t pid, void *addr){
         pthread_mutex_unlock(&page_table.mutex);
         pthread_mutex_unlock(&plist.mutex);
         mmu_zero_fill(frame);
-        void* _addr = (void*)((intptr_t)addr - UVM_BASEADDR);
+        void* _addr = (void*)((intptr_t)addr);
         mmu_resident(pid, _addr, frame, PROT_READ);
     }
     // If protection equals PROT_READ or PROT_NOME, the fault is from requiring writing access
