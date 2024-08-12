@@ -182,7 +182,6 @@ void pager_init(int nframes, int nblocks){
     blocks.arr = (bool*)malloc(nblocks * sizeof(bool));
     pthread_mutex_init(&frames.mutex, NULL);
     pthread_mutex_init(&blocks.mutex, NULL);
-    printf("CHEGOU NO FIM DO INIT\n");
 }
 
 void pager_create(pid_t pid){
@@ -313,24 +312,50 @@ int pager_syslog(pid_t pid, void *addr, size_t len){return 0;}
 void pager_destroy(pid_t pid){
     pthread_mutex_lock(&plist.mutex);
     if (plist.num_process == 0) goto end;
-    
     // Locate process in process list and mantain the proces right before
     struct plist_node* currProcess = plist.head;
     struct plist_node* prevProcess = NULL;
-    for(int i = 0; i < plist.num_process; i++, prevProcess=currProcess, currProcess = currProcess->next) 
+    for(int i = 0; i < plist.num_process; i++)
     {
         if(currProcess->pid == pid) break;
-        else if(i == plist.num_process - 1) goto end;
+        prevProcess=currProcess;
+        currProcess = currProcess->next;
+        
     }
-    
-    struct p_pages_node* currPage = currProcess->p_pages->head;
-    // Remove all nodes except head
-    while(currPage->next != NULL)
+    // Whether the process has allocated pages, remove it
+    if(currProcess->p_pages != NULL)
     {
-        struct p_pages_node* toRemove = currPage->next;
-        currPage->next = toRemove->next;
-        // Remove from page table
-        pthread_mutex_lock(&page_table.mutex);
+        struct p_pages_node* currPage = currProcess->p_pages->head;
+        // Remove all nodes except head
+        while(currPage->next != NULL)
+        {
+            struct p_pages_node* toRemove = currPage->next;
+            currPage->next = toRemove->next;
+            // Remove from page table
+            pthread_mutex_lock(&page_table.mutex);
+            struct table_entry* prev = toRemove->previous_entry;
+            struct table_entry* curr = toRemove->entry;
+            int frame = curr->frame;
+            int block = curr->disk_block;
+            struct table_entry* next = toRemove->entry->next;
+            // If you are removing the head of the page table, update head
+            if(prev == NULL) page_table.head = next;
+            else prev->next = next;
+            free(curr);
+            pthread_mutex_unlock(&page_table.mutex);
+            // Remove from process page table
+            free(toRemove);
+            // Free resources
+            pthread_mutex_lock(&blocks.mutex);
+            freeDiskBlock(block);
+            pthread_mutex_unlock(&blocks.mutex);
+            pthread_mutex_lock(&frames.mutex);
+            freeMemoryFrame(frame);
+            pthread_mutex_unlock(&frames.mutex);
+        }
+    
+        // Remove head node
+        struct p_pages_node* toRemove = currPage;
         struct table_entry* prev = toRemove->previous_entry;
         struct table_entry* curr = toRemove->entry;
         int frame = curr->frame;
@@ -351,32 +376,17 @@ void pager_destroy(pid_t pid){
         freeMemoryFrame(frame);
         pthread_mutex_unlock(&frames.mutex);
     }
-    // Remove head node
-    struct p_pages_node* toRemove = currPage;
-    struct table_entry* prev = toRemove->previous_entry;
-    struct table_entry* curr = toRemove->entry;
-    int frame = curr->frame;
-    int block = curr->disk_block;
-    struct table_entry* next = toRemove->entry->next;
-    // If you are removing the head of the page table, update head
-    if(prev == NULL) page_table.head = next;
-    else prev->next = next;
-    free(curr);
-    pthread_mutex_unlock(&page_table.mutex);
-    // Remove from process page table
-    free(toRemove);
-    // Free resources
-    pthread_mutex_lock(&blocks.mutex);
-    freeDiskBlock(block);
-    pthread_mutex_unlock(&blocks.mutex);
-    pthread_mutex_lock(&frames.mutex);
-    freeMemoryFrame(frame);
-    pthread_mutex_unlock(&frames.mutex);
     // Remove the process block from the process list
     if(prevProcess == NULL) plist.head = currProcess->next;
     else prevProcess->next = currProcess->next;
     free(currProcess);
+    plist.num_process--;
     end:
     pthread_mutex_unlock(&plist.mutex);
-    printf("CHEGOU NO FIM DO DESTROY\n");
+    // Whether has no more processes, dealocate resources
+    if(plist.num_process == 0)
+    {
+        free(frames.arr);
+        free(blocks.arr);
+    }
 }
