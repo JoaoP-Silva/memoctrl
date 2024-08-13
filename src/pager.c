@@ -15,8 +15,9 @@
 
 // An entry in the page table
 struct table_entry{
-    int page_number;
+    intptr_t page_number;
     bool in_mem;
+    bool wrote;
     int frame;
     int prot;
     int disk_block;
@@ -170,7 +171,9 @@ intptr_t getVAddr(int pageNumber)
 // Clock (second chance) algorithm (run this method with the mutex locked)
 struct table_entry* getUnusedPage()
 {
-    while(page_table.ptr == NULL || page_table.ptr->prot != PROT_NONE)
+    // Initialize page_table.ptr
+    if(page_table.ptr == NULL)page_table.ptr = page_table.head;
+    while(page_table.ptr->prot != PROT_NONE)
     {
         // Only consider pages in memory
         if(page_table.ptr->in_mem == 1)
@@ -184,10 +187,11 @@ struct table_entry* getUnusedPage()
             // Go to next page
         }
         page_table.ptr = page_table.ptr->next;
-
+        if(page_table.ptr == NULL)page_table.ptr = page_table.head;
     }
-
-    return page_table.ptr;
+    struct table_entry* dead_entry = page_table.ptr;
+    page_table.ptr = page_table.ptr->next;
+    return dead_entry;
 }
 
 /* External functions */
@@ -286,7 +290,7 @@ void pager_fault(pid_t pid, void *addr){
     intptr_t page_number = ((intptr_t)addr - UVM_BASEADDR) /  0x1000;
     struct p_pages_node* currPage = currProcess->p_pages->head;
     // Go to the right page
-    for(int i = 0; i < (int)page_number; i++, currPage = currPage->next);
+    for(int i = 0; i < page_number; i++, currPage = currPage->next);
 
     //If the zero-fill wasnt perfomed yet, alocate memory for the page and change permissions
     int used = currPage->used;
@@ -311,17 +315,18 @@ void pager_fault(pid_t pid, void *addr){
             dead_entry->in_mem = 0;
             void* _addr =  (void*)getVAddr(dead_entry->page_number); 
             mmu_nonresident(pid, _addr);
-            mmu_disk_write(frame, block);
+            if(dead_entry->wrote)mmu_disk_write(frame, block);
         }
         struct table_entry* new_entry = (struct table_entry*)malloc(sizeof(struct table_entry));
         currPage->entry = new_entry;
         new_entry->frame = frame;
         new_entry->disk_block = currPage->disc_block;
         new_entry->next = NULL;
-        new_entry->page_number = (int)page_number;
-        new_entry->prot = PROT_NONE;
+        new_entry->page_number = page_number;
+        new_entry->prot = PROT_READ;
         new_entry->pid = pid;
         new_entry->in_mem = 1;
+        new_entry->wrote = 0;
         // Append entry to the table
         if(page_table.head == NULL )
         {
@@ -336,7 +341,6 @@ void pager_fault(pid_t pid, void *addr){
             page_table.tail = new_entry;
             currPage->previous_entry = old_tail;
         }
-        pthread_mutex_unlock(&plist.mutex);
         mmu_zero_fill(frame);
         currPage->used = 1;
         void* _addr = (void*)((intptr_t)addr);
@@ -348,12 +352,12 @@ void pager_fault(pid_t pid, void *addr){
         int in_mem = currPage->entry->in_mem;
         if(in_mem)
         {
+            currPage->entry->wrote = 1;
             currPage->entry->prot = PROT_READ | PROT_WRITE;
             void* _addr = (void*)((intptr_t)addr);
             mmu_chprot(pid, _addr, PROT_READ | PROT_WRITE);
-            pthread_mutex_unlock(&plist.mutex);
         }
-        else if(!in_mem)
+        else
         {
             // Unsuded page go to disk
             struct table_entry* currEntry = currPage->entry;
@@ -362,12 +366,15 @@ void pager_fault(pid_t pid, void *addr){
             int dead_block = dead_entry->disk_block;
             dead_entry->in_mem = 0;
             void* _addr =  (void*)getVAddr(dead_entry->page_number); 
-            mmu_nonresident(pid, addr);
-            mmu_disk_write(frame, dead_block);
-            mmu_disk_read(currEntry->disk_block, frame);
+            mmu_nonresident(pid, _addr);
+            // Check whether the swapped pages wrote on memory
+            if(dead_entry->wrote) mmu_disk_write(frame, dead_block);
+            if(currEntry->wrote)mmu_disk_read(currEntry->disk_block, frame);
+            else mmu_zero_fill(frame);
             // Update curr entry status
             currEntry->frame = frame;
             currEntry->in_mem = 1;
+            currEntry->prot = 1;
             // Set mmu_resident parameters
             frame = currEntry->frame;
             int prot = currEntry->prot;
@@ -376,7 +383,7 @@ void pager_fault(pid_t pid, void *addr){
             mmu_resident(pid, _addr, frame, prot);
         }
     }
-    
+    pthread_mutex_unlock(&plist.mutex);
     pthread_mutex_unlock(&page_table.mutex);
 }
 
