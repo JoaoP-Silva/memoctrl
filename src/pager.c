@@ -387,9 +387,9 @@ int pager_syslog(pid_t pid, void *addr, size_t len){
     for(int i = 0; i < plist.num_process; i++, currProcess = currProcess->next) if(currProcess->pid == pid) break;    
     
     int pageNumber = currProcess->n_pages;
-    intptr_t rem_bytes = ((intptr_t)addr - UVM_BASEADDR) % 0x1000;
+    intptr_t rem_bytes = len % 4;
     intptr_t offset_pages = ((intptr_t)addr - UVM_BASEADDR) / ((intptr_t)0x1000);
-    intptr_t num_pages_write = len / (intptr_t)0x1000;
+    intptr_t num_pages_write = len / 4;
 
 	if (pageNumber == 0) {
         pthread_mutex_unlock(&page_table.mutex);
@@ -397,10 +397,10 @@ int pager_syslog(pid_t pid, void *addr, size_t len){
 		return -1;
 	}
     else {
-        intptr_t end_addr_req  =  addr + num_pages_write;
-        intptr_t end_addr_req  =  UVM_BASEADDR + pageNumber;
+        intptr_t end_addr_req  =  (intptr_t)addr + len * 0x400;
+        intptr_t end_addr_real  =  UVM_BASEADDR + (intptr_t)(0x1000 * pageNumber);
 
-        if(end_addr_req < end_addr_req || addr < UVM_BASEADDR) {
+        if(end_addr_req > end_addr_real || (intptr_t)addr < UVM_BASEADDR) {
             pthread_mutex_unlock(&page_table.mutex);
             pthread_mutex_unlock(&plist.mutex);
             return -1;
