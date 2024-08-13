@@ -387,7 +387,9 @@ int pager_syslog(pid_t pid, void *addr, size_t len){
     for(int i = 0; i < plist.num_process; i++, currProcess = currProcess->next) if(currProcess->pid == pid) break;    
     
     int pageNumber = currProcess->n_pages;
-    intptr_t rem_bytes = len % 4;
+    intptr_t rem_bytes = 0;
+    if(len * 8 > 0x1000)rem_bytes = (intptr_t)(len * 8) % 0x1000;
+    intptr_t offset_bytes = ((intptr_t)addr - UVM_BASEADDR) % 0x1000; 
     intptr_t offset_pages = ((intptr_t)addr - UVM_BASEADDR) / ((intptr_t)0x1000);
     intptr_t num_pages_write = len / 4;
 
@@ -397,8 +399,8 @@ int pager_syslog(pid_t pid, void *addr, size_t len){
 		return -1;
 	}
     else {
-        intptr_t end_addr_req  =  (intptr_t)addr + len * 0x400;
-        intptr_t end_addr_real  =  UVM_BASEADDR + (intptr_t)(0x1000 * pageNumber);
+        intptr_t end_addr_req  =  (intptr_t)addr + (intptr_t)len * 8;
+        intptr_t end_addr_real  =  UVM_BASEADDR + (intptr_t)(0x1000 * (intptr_t)pageNumber);
 
         if(end_addr_req > end_addr_real || (intptr_t)addr < UVM_BASEADDR) {
             pthread_mutex_unlock(&page_table.mutex);
@@ -419,7 +421,10 @@ int pager_syslog(pid_t pid, void *addr, size_t len){
     for(intptr_t i = 0; i < num_pages_write; i++, currPage = currPage->next)
     {
         frame = currPage->entry->frame;
-        for(int j = 0; j < 4; j++)buf[i] = pmem[frame + j];
+        // If is the first frame, add offset bytes
+        if(i == 0)for(int j = offset_bytes; j < len && j < 0x1000; j++)buf[j] = pmem[frame + j];
+        // In middle frames, get the full page
+        else for(int j = 0; j < len && j < 0x1000; j++)buf[j] = pmem[frame + j];
     }
     // get the remaining bytes
     if(rem_bytes)
@@ -429,6 +434,7 @@ int pager_syslog(pid_t pid, void *addr, size_t len){
     }
     // Print buffer
     for(int i = 0; i < len; i++) printf("%02x", (unsigned)buf[i]);
+    printf("\n");
     pthread_mutex_unlock(&page_table.mutex);
     pthread_mutex_unlock(&plist.mutex);
     return 0;
