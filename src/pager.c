@@ -303,7 +303,6 @@ void pager_fault(pid_t pid, void *addr){
         if(frame != -1)
         {
             allocateFrame(frame);
-            pthread_mutex_unlock(&frames.mutex);
         }
         // All frames in use, perform second chance algorithm
         else
@@ -345,6 +344,7 @@ void pager_fault(pid_t pid, void *addr){
         currPage->used = 1;
         void* _addr = (void*)((intptr_t)addr);
         mmu_resident(pid, _addr, frame, PROT_READ);
+        pthread_mutex_unlock(&frames.mutex);
     }
     // Memory already used
     else
@@ -526,7 +526,6 @@ void pager_destroy(pid_t pid){
             pthread_mutex_unlock(&blocks.mutex);
             pthread_mutex_lock(&frames.mutex);
             freeMemoryFrame(frame);
-            pthread_mutex_unlock(&frames.mutex);
         }
         // If the page wasnt in the page table, only the block was reserved
         else
